@@ -50,7 +50,7 @@ class YTAPIKeyManager:
                 self._idx += 1
                 if not self.exhausted[key]:
                     return key
-            return None  # sab keys ka daily limit khatam ho gaya
+            return None
 
     async def mark_exhausted(self, key: str):
         async with self._lock:
@@ -79,10 +79,9 @@ class YouTube:
             r"|playlist\?list=PL[A-Za-z0-9_-]+|[A-Za-z0-9_-]{11}))\S*"
         )
 
-        # ---- YT_API third-party API (unlimited key rotation) ----
         self.yt_api_url = os.environ.get("YT_API", "https://api.onegrab.fun").rstrip("/")
         self.yt_api_keys = YTAPIKeyManager(_load_yt_api_keys())
-        self.yt_api_max_size = 60 * 1024 * 1024  # 60MB cap
+        self.yt_api_max_size = 60 * 1024 * 1024
         self.yt_api_timeout = aiohttp.ClientTimeout(total=20)
         self.yt_api_dl_timeout = aiohttp.ClientTimeout(total=60)
 
@@ -264,7 +263,6 @@ class YouTube:
         if Path(filename).exists():
             return filename
 
-        # pehle YT_API try karo, fail/exhaust hone par yt-dlp fallback
         result = await self.download_via_yt_api(video_id, filename, video)
         if result:
             return result
@@ -305,4 +303,3 @@ class YouTube:
             return filename
 
         return await asyncio.to_thread(_download)
-                                   
