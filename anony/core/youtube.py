@@ -240,6 +240,7 @@ class YouTube:
                 await self.yt_api_keys.mark_exhausted(key)
                 return await self.download_via_yt_api(video_id, filename, video)
             if "_status" in track:
+                logger.warning("YT_API: request failed, response: %s", track)
                 return None
 
             file_id = track.get("id")
