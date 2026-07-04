@@ -10,7 +10,7 @@ import aiohttp
 
 API_URL = os.environ.get("YT_API", "https://api.onegrab.fun")
 
-# Multiple keys, comma se alag ya YT_API_KEY_1 / YT_API_KEY_2 dono support karta hai
+# Multiple keys support (X-API-Key header based auth)
 _raw_keys = [
     os.environ.get("YT_API_KEY_1"),
     os.environ.get("YT_API_KEY_2"),
@@ -51,7 +51,52 @@ def time_to_seconds(time):
     return sum(int(x) * 60 ** i for i, x in enumerate(reversed(stringt.split(":"))))
 
 
-async def _fetch_with_rotation(video_id: str, media_type: str, file_path: str, timeout_sec: int) -> str | None:
+async def _resolve_track(youtube_url: str, want_video: bool, key: str) -> dict | None:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{API_URL}/api/track",
+            params={"url": youtube_url, "video": "true" if want_video else "false"},
+            headers={"X-API-Key": key},
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as resp:
+            if resp.status != 200:
+                return {"_status": resp.status}
+            return await resp.json(content_type=None)
+
+
+async def _stream_file(file_id: str, file_path: str, key: str, timeout_sec: int) -> str | None:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{API_URL}/stream",
+            params={"id": file_id},
+            headers={"X-API-Key": key},
+            timeout=aiohttp.ClientTimeout(total=timeout_sec),
+        ) as resp:
+            if resp.status != 200:
+                return None
+
+            content_type = resp.headers.get("Content-Type", "")
+            if content_type and not (
+                content_type.startswith("audio/")
+                or content_type.startswith("video/")
+                or content_type == "application/octet-stream"
+            ):
+                return None
+
+            tmp_path = file_path + ".part"
+            with open(tmp_path, "wb") as f:
+                async for chunk in resp.content.iter_chunked(131072):
+                    f.write(chunk)
+
+    if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+        os.replace(tmp_path, file_path)
+        return file_path
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+    return None
+
+
+async def _fetch_with_rotation(youtube_url: str, want_video: bool, file_path: str, timeout_sec: int) -> str | None:
     if not API_KEYS:
         return None
 
@@ -60,38 +105,20 @@ async def _fetch_with_rotation(video_id: str, media_type: str, file_path: str, t
         return None
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{API_URL}/download",
-                params={"url": video_id, "type": media_type, "api_key": key},
-                timeout=aiohttp.ClientTimeout(total=timeout_sec)
-            ) as resp:
-                if resp.status in (429, 403):
-                    # is key ka limit khatam ho gaya, agli key try karo
-                    await key_manager.mark_exhausted(key)
-                    return await _fetch_with_rotation(video_id, media_type, file_path, timeout_sec)
-                if resp.status != 200:
-                    return None
+        track = await _resolve_track(youtube_url, want_video, key)
+        if track is None:
+            return None
+        if track.get("_status") in (429, 403):
+            await key_manager.mark_exhausted(key)
+            return await _fetch_with_rotation(youtube_url, want_video, file_path, timeout_sec)
+        if "_status" in track:
+            return None
 
-                content_type = resp.headers.get("Content-Type", "")
-                if content_type and not (
-                    content_type.startswith("audio/")
-                    or content_type.startswith("video/")
-                    or content_type == "application/octet-stream"
-                ):
-                    return None
+        file_id = track.get("id")
+        if not file_id:
+            return None
 
-                tmp_path = file_path + ".part"
-                with open(tmp_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(131072):
-                        f.write(chunk)
-
-        if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
-            os.replace(tmp_path, file_path)
-            return file_path
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        return None
+        return await _stream_file(file_id, file_path, key, timeout_sec)
     except Exception:
         tmp_path = file_path + ".part"
         if os.path.exists(tmp_path):
@@ -112,7 +139,8 @@ async def download_song(link: str) -> str:
     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
         return file_path
 
-    return await _fetch_with_rotation(video_id, "audio", file_path, timeout_sec=300)
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+    return await _fetch_with_rotation(youtube_url, False, file_path, timeout_sec=300)
 
 
 async def download_video(link: str) -> str:
@@ -125,7 +153,8 @@ async def download_video(link: str) -> str:
     if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
         return file_path
 
-    return await _fetch_with_rotation(video_id, "video", file_path, timeout_sec=600)
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+    return await _fetch_with_rotation(youtube_url, True, file_path, timeout_sec=600)
 
 
 class YouTubeAPI:
@@ -318,4 +347,4 @@ class YouTubeAPI:
 
 
 YouTube = YouTubeAPI()
-                        
+        
